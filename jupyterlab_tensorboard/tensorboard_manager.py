@@ -60,20 +60,25 @@ try:
 
             if ( hasattr(application, 'standard_tensorboard_wsgi') and inspect.isfunction(application.standard_tensorboard_wsgi)):
                 logging.debug("TensorBoard 1.10 or above series detected")
-                standard_tensorboard_wsgi = application.standard_tensorboard_wsgi
+                return manager.add_instance(logdir, application.standard_tensorboard_wsgi(
+                    tensorboard.flags,
+                    tensorboard.plugin_loaders,
+                    tensorboard.assets_zip_provider))
+             
             else:
                 logging.debug("TensorBoard 2.3 or above series detected")
-                def standard_tensorboard_wsgi(flags, plugin_loaders, assets_zip_provider):
-                    from tensorboard.backend.event_processing import data_ingester
-                    ingester = data_ingester.LocalDataIngester(flags)
-                    ingester.start()
-                    return application.TensorBoardWSGIApp(flags, plugin_loaders, ingester.data_provider,
-                        assets_zip_provider, ingester.deprecated_multiplexer)
+                from tensorboard.backend.event_processing import data_ingester
+                ingester = data_ingester.LocalDataIngester(tensorboard.flags)
+                ingester.start()
+
+                return manager.add_instance(logdir, application.TensorBoardWSGIApp(
+                    tensorboard.flags,
+                    tensorboard.plugin_loaders,
+                    ingester.data_provider,
+                    tensorboard.assets_zip_provider,
+                    ingester.deprecated_multiplexer),
+                    ingester)
         
-            return manager.add_instance(logdir, standard_tensorboard_wsgi(
-                tensorboard.flags,
-                tensorboard.plugin_loaders,
-                tensorboard.assets_zip_provider))
     else:
         logging.debug("TensorBoard 0.4.x series detected")
 
@@ -117,7 +122,7 @@ except ImportError:
             plugins=_plugins)
 
 TensorBoardInstance = namedtuple(
-    'TensorBoardInstance', ['name', 'logdir', 'tb_app'])
+    'TensorBoardInstance', ['name', 'logdir', 'tb_app', 'ingester'])
 
 class TensorboardManager(dict):
 
@@ -144,9 +149,9 @@ class TensorboardManager(dict):
 
         return self._logdir_dict[logdir]
 
-    def add_instance(self, logdir, tb_application):
+    def add_instance(self, logdir, tb_application, ingester=None):
         name = self._next_available_name()
-        instance = TensorBoardInstance(name, logdir, tb_application)
+        instance = TensorBoardInstance(name, logdir, tb_application, ingester)
         self[name] = instance
         self._logdir_dict[logdir] = instance
         return tb_application
@@ -154,6 +159,8 @@ class TensorboardManager(dict):
     def terminate(self, name, force=True):
         if name in self:
             instance = self[name]
+            if instance.ingester is not None:
+                instance.ingester._reload_interval = 0
             del self[name], self._logdir_dict[instance.logdir]
         else:
             raise Exception("There's no tensorboard instance named %s" % name)
